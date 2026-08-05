@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Config - Use environment variables for security
+# Config - Only Bot Token and YouTube API Key needed!
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "YOUR_YOUTUBE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 
@@ -22,21 +22,21 @@ def parse_channel_input(user_input):
 def get_channel_data(channel_input):
     clean_input = parse_channel_input(channel_input)
 
-    # Direct Channel ID
+    # 1. Direct Channel ID
     if clean_input.startswith("UC") and len(clean_input) == 24:
         url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&id={clean_input}&key={YOUTUBE_API_KEY}"
         res = requests.get(url).json()
         if res.get("items"):
             return res["items"][0]
 
-    # Handle lookup (@handle)
+    # 2. Handle lookup (@handle)
     handle = clean_input if clean_input.startswith("@") else f"@{clean_input}"
     url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&forHandle={handle}&key={YOUTUBE_API_KEY}"
     res = requests.get(url).json()
     if res.get("items"):
         return res["items"][0]
 
-    # Fallback search
+    # 3. Fallback search
     search_url = f"https://www.googleapis.com/youtube/v3/search?part=id&type=channel&q={clean_input}&maxResults=1&key={YOUTUBE_API_KEY}"
     search_res = requests.get(search_url).json()
     if search_res.get("items"):
@@ -59,7 +59,6 @@ def fetch_youtube_report(channel_input):
     video_count = int(channel_data["statistics"].get("videoCount", 0))
     uploads_playlist_id = channel_data["contentDetails"]["relatedPlaylists"]["uploads"]
 
-    # Fetch last 5 videos
     playlist_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId={uploads_playlist_id}&maxResults=5&key={YOUTUBE_API_KEY}"
     playlist_res = requests.get(playlist_url).json()
     video_ids = [item["contentDetails"]["videoId"] for item in playlist_res.get("items", [])]
@@ -90,10 +89,11 @@ def fetch_youtube_report(channel_input):
 
     return message
 
-def send_telegram_message(text, chat_id):
+def send_telegram_message(text, target_chat_id):
+    """Sends the message strictly to target_chat_id (whoever made the request)."""
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_id,
+        "chat_id": target_chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
@@ -102,22 +102,23 @@ def send_telegram_message(text, chat_id):
 
 @app.route("/", methods=["POST"])
 def telegram_webhook():
-    """Telegram sends HTTP POST requests here whenever a user sends a message."""
     data = request.get_json()
     
     if "message" in data and "text" in data["message"]:
-        chat_id = data["message"]["chat"]["id"]
+        # Extract the specific ID of the person sending the message right now
+        sender_chat_id = data["message"]["chat"]["id"]
         text_query = data["message"]["text"].strip()
 
-        send_telegram_message("🔎 Fetching YouTube channel stats...", chat_id)
+        # Reply ONLY to the sender
+        send_telegram_message("🔎 Fetching YouTube channel stats...", sender_chat_id)
         report = fetch_youtube_report(text_query)
-        send_telegram_message(report, chat_id)
+        send_telegram_message(report, sender_chat_id)
 
     return jsonify({"status": "ok"}), 200
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return "Bot is live and waiting for Telegram webhooks!"
+    return "Bot is running!"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
